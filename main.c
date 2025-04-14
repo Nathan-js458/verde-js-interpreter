@@ -3,71 +3,98 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Função para ler todo o conteúdo de um arquivo
-char* ler_arquivo(const char* caminho) {
-    FILE* arquivo = fopen(caminho, "rb");
-    if (!arquivo) return NULL;
+#define MAX_LINHA 1024
 
-    fseek(arquivo, 0, SEEK_END);
-    long tamanho = ftell(arquivo);
-    rewind(arquivo);
+// console.log básico
+static JSValue js_console_log(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv) {
+    for (int i = 0; i < argc; i++) {
+        const char *str = JS_ToCString(ctx, argv[i]);
+        if (str) {
+            printf("%s", str);
+            JS_FreeCString(ctx, str);
+        }
+        if (i < argc - 1) {
+            printf(" ");
+        }
+    }
+    printf("\n");
+    return JS_UNDEFINED;
+}
 
-    char* conteudo = (char*)malloc(tamanho + 1);
-    if (!conteudo) return NULL;
+// adiciona console.log ao contexto
+void adicionar_console(JSContext *ctx) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue console = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, console, "log",
+        JS_NewCFunction(ctx, js_console_log, "log", 1));
+    JS_SetPropertyStr(ctx, global, "console", console);
+    JS_FreeValue(ctx, global);
+}
 
-    fread(conteudo, 1, tamanho, arquivo);
-    conteudo[tamanho] = '\0';
-
-    fclose(arquivo);
+// lê conteúdo de arquivo JS
+char *ler_arquivo(const char *caminho) {
+    FILE *f = fopen(caminho, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long tam = ftell(f);
+    rewind(f);
+    char *conteudo = malloc(tam + 1);
+    fread(conteudo, 1, tam, f);
+    conteudo[tam] = '\0';
+    fclose(f);
     return conteudo;
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s file.js\n", argv[0]);
+        fprintf(stderr, "Uso: %s arquivo.js\n", argv[0]);
         return 1;
     }
 
-    const char* caminho_arquivo = argv[1];
-    char* codigo = ler_arquivo(caminho_arquivo);
-
+    char *codigo = ler_arquivo(argv[1]);
     if (!codigo) {
-        fprintf(stderr, "Error while opening file: %s\n", caminho_arquivo);
+        fprintf(stderr, "Erro ao abrir: %s\n", argv[1]);
         return 1;
     }
 
-    // Inicializa QuickJS
-    JSRuntime* rt = JS_NewRuntime();
-    JSContext* ctx = JS_NewContext(rt);
+    JSRuntime *rt = JS_NewRuntime();
+    JSContext *ctx = JS_NewContext(rt);
+    adicionar_console(ctx);
 
-    if (!rt || !ctx) {
-        fprintf(stderr, "Error while creating runtime/context QuickJS\n");
-        free(codigo);
-        return 1;
-    }
+    char *linha = strtok(codigo, "\n");
+    int num_linha = 1;
 
-    // Executa o código JS
-    JSValue result = JS_Eval(ctx, codigo, strlen(codigo), caminho_arquivo, JS_EVAL_TYPE_GLOBAL);
+    while (linha) {
+        if (strlen(linha) > 0) {
+            JSValue val = JS_Eval(ctx, linha, strlen(linha), "<linha>", JS_EVAL_TYPE_GLOBAL);
 
-    if (JS_IsException(result)) {
-        JSValue exception = JS_GetException(ctx);
-        const char* error = JS_ToCString(ctx, exception);
-        fprintf(stderr, "JS Error: %s\n", error);
-        JS_FreeCString(ctx, error);
-        JS_FreeValue(ctx, exception);
-    } else {
-        const char* output = JS_ToCString(ctx, result);
-        if (output) {
-            printf("%s\n", output);
-            JS_FreeCString(ctx, output);
+            if (JS_IsException(val)) {
+                JSValue exc = JS_GetException(ctx);
+                const char *err = JS_ToCString(ctx, exc);
+                fprintf(stderr, "[linha %d] Erro: %s\n", num_linha, err);
+                JS_FreeCString(ctx, err);
+                JS_FreeValue(ctx, exc);
+            } else {
+                JSValue tipo = JS_Typeof(ctx, val);
+                const char *tipo_str = JS_ToCString(ctx, tipo);
+                if (strcmp(tipo_str, "undefined") != 0) {
+                    const char *saida = JS_ToCString(ctx, val);
+                    printf("[linha %d] => %s\n", num_linha, saida);
+                    JS_FreeCString(ctx, saida);
+                }
+                JS_FreeCString(ctx, tipo_str);
+            }
+
+            JS_FreeValue(ctx, val);
         }
+
+        linha = strtok(NULL, "\n");
+        num_linha++;
     }
 
-    // Libera recursos
-    JS_FreeValue(ctx, result);
+    free(codigo);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
-    free(codigo);
-
     return 0;
 }
