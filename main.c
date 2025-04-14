@@ -2,10 +2,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>  // Para true/false
 
-#define MAX_LINHA 1024
-
-// console.log
+// === console.log ===
 static JSValue js_console_log(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv) {
     for (int i = 0; i < argc; i++) {
@@ -20,7 +19,7 @@ static JSValue js_console_log(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-// console.error
+// === console.error ===
 static JSValue js_console_error(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv) {
     for (int i = 0; i < argc; i++) {
@@ -35,7 +34,7 @@ static JSValue js_console_error(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-// Adiciona console.log e console.error
+// === Adiciona o objeto console ===
 void adicionar_console(JSContext *ctx) {
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue console = JS_NewObject(ctx);
@@ -49,20 +48,59 @@ void adicionar_console(JSContext *ctx) {
     JS_FreeValue(ctx, global);
 }
 
-// Função para ler um arquivo JS
+// === Leitura do arquivo .js ===
 char *ler_arquivo(const char *caminho) {
     FILE *f = fopen(caminho, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
     long tam = ftell(f);
     rewind(f);
-    char *conteudo = malloc(tam + 1);
-    fread(conteudo, 1, tam, f);
-    conteudo[tam] = '\0';
+    char *codigo = malloc(tam + 1);
+    fread(codigo, 1, tam, f);
+    codigo[tam] = '\0';
     fclose(f);
-    return conteudo;
+    return codigo;
 }
 
+// === Loader de módulos ES6 ===
+static JSModuleDef *js_module_loader(JSContext *ctx,
+                                     const char *module_name, void *opaque) {
+    FILE *f = fopen(module_name, "rb");
+    if (!f) {
+        fprintf(stderr, "Erro ao carregar módulo: %s\n", module_name);
+        return NULL;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    rewind(f);
+
+    char *buf = malloc(len + 1);
+    fread(buf, 1, len, f);
+    buf[len] = '\0';
+    fclose(f);
+
+    JSValue val = JS_Eval(ctx, buf, len, module_name,
+                          JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    free(buf);
+
+    if (JS_IsException(val)) {
+        JSValue exc = JS_GetException(ctx);
+        const char *err = JS_ToCString(ctx, exc);
+        fprintf(stderr, "Erro ao compilar módulo: %s\n", err);
+        JS_FreeCString(ctx, err);
+        JS_FreeValue(ctx, exc);
+        return NULL;
+    }
+
+    JSModuleDef *m = (JSModuleDef *)JS_VALUE_GET_PTR(val);
+    //JS_SetModuleImportMeta(ctx, val, true, false);
+    JS_EvalFunction(ctx, val);  // Executa o módulo
+
+    return m;
+}
+
+// === Função principal ===
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Uso: %s arquivo.js\n", argv[0]);
@@ -77,42 +115,32 @@ int main(int argc, char **argv) {
 
     JSRuntime *rt = JS_NewRuntime();
     JSContext *ctx = JS_NewContext(rt);
+    JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
     adicionar_console(ctx);
 
-    char *linha = strtok(codigo, "\n");
-    int num_linha = 1;
+    JSValue mod = JS_Eval(ctx, codigo, strlen(codigo), argv[1],
+                          JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
 
-    while (linha) {
-        if (strlen(linha) > 0) {
-            JSValue val = JS_Eval(ctx, linha, strlen(linha), "<linha>", JS_EVAL_TYPE_GLOBAL);
-
-            if (JS_IsException(val)) {
-                JSValue exc = JS_GetException(ctx);
-                const char *err = JS_ToCString(ctx, exc);
-                fprintf(stderr, "[linha %d] Erro: %s\n", num_linha, err);
-                JS_FreeCString(ctx, err);
-                JS_FreeValue(ctx, exc);
-            } else {
-                int tipo = JS_VALUE_GET_TAG(val);
-                if (tipo != JS_TAG_UNDEFINED) {
-                    const char *saida = JS_ToCString(ctx, val);
-                    if (saida) {
-                        printf("%s\n", num_linha, saida);
-                        JS_FreeCString(ctx, saida);
-                    }
-                }
-            }
-
-            JS_FreeValue(ctx, val);
+    if (JS_IsException(mod)) {
+        JSValue exc = JS_GetException(ctx);
+        const char *err = JS_ToCString(ctx, exc);
+        fprintf(stderr, "Erro ao compilar o arquivo principal: %s\n", err);
+        JS_FreeCString(ctx, err);
+        JS_FreeValue(ctx, exc);
+    } else {
+        //JS_SetModuleImportMeta(ctx, mod, true, false);
+        JSValue result = JS_EvalFunction(ctx, mod);
+        if (JS_IsException(result)) {
+            JSValue exc = JS_GetException(ctx);
+            const char *err = JS_ToCString(ctx, exc);
+            fprintf(stderr, "Erro ao executar o arquivo principal: %s\n", err);
+            JS_FreeCString(ctx, err);
+            JS_FreeValue(ctx, exc);
         }
-
-        linha = strtok(NULL, "\n");
-        num_linha++;
     }
 
     free(codigo);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
-
     return 0;
 }
