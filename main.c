@@ -5,7 +5,7 @@
 
 #define MAX_LINHA 1024
 
-// console.log básico
+// Função nativa para console.log
 static JSValue js_console_log(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv) {
     for (int i = 0; i < argc; i++) {
@@ -22,7 +22,7 @@ static JSValue js_console_log(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-// adiciona console.log ao contexto
+// Adiciona console.log ao contexto
 void adicionar_console(JSContext *ctx) {
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue console = JS_NewObject(ctx);
@@ -32,7 +32,7 @@ void adicionar_console(JSContext *ctx) {
     JS_FreeValue(ctx, global);
 }
 
-// lê conteúdo de arquivo JS
+// Função para ler o conteúdo de um arquivo JS
 char *ler_arquivo(const char *caminho) {
     FILE *f = fopen(caminho, "rb");
     if (!f) return NULL;
@@ -52,49 +52,59 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // Lê o código JavaScript do arquivo
     char *codigo = ler_arquivo(argv[1]);
     if (!codigo) {
-        fprintf(stderr, "Erro ao abrir: %s\n", argv[1]);
+        fprintf(stderr, "Erro ao abrir o arquivo: %s\n", argv[1]);
         return 1;
     }
 
+    // Cria o runtime e contexto do QuickJS
     JSRuntime *rt = JS_NewRuntime();
     JSContext *ctx = JS_NewContext(rt);
-    adicionar_console(ctx);
+    adicionar_console(ctx); // Adiciona console.log ao contexto
 
+    // Processa linha por linha do código
     char *linha = strtok(codigo, "\n");
     int num_linha = 1;
 
     while (linha) {
         if (strlen(linha) > 0) {
+            // Avalia cada linha de código JS
             JSValue val = JS_Eval(ctx, linha, strlen(linha), "<linha>", JS_EVAL_TYPE_GLOBAL);
 
             if (JS_IsException(val)) {
+                // Em caso de erro, imprime a exceção
                 JSValue exc = JS_GetException(ctx);
                 const char *err = JS_ToCString(ctx, exc);
                 fprintf(stderr, "[linha %d] Erro: %s\n", num_linha, err);
                 JS_FreeCString(ctx, err);
                 JS_FreeValue(ctx, exc);
             } else {
-                JSValue tipo = JS_Typeof(ctx, val);
-                const char *tipo_str = JS_ToCString(ctx, tipo);
-                if (strcmp(tipo_str, "undefined") != 0) {
+                // Obtém o tipo do valor usando JS_VALUE_GET_TAG
+                int tipo = JS_VALUE_GET_TAG(val);
+
+                if (tipo != JS_TAG_UNDEFINED) {
                     const char *saida = JS_ToCString(ctx, val);
-                    printf("[linha %d] => %s\n", num_linha, saida);
-                    JS_FreeCString(ctx, saida);
+                    if (saida) {
+                        // Imprime o valor da expressão
+                        printf("%s\n", saida);
+                        JS_FreeCString(ctx, saida);
+                    }
                 }
-                JS_FreeCString(ctx, tipo_str);
             }
 
-            JS_FreeValue(ctx, val);
+            JS_FreeValue(ctx, val); // Libera a memória
         }
 
-        linha = strtok(NULL, "\n");
+        linha = strtok(NULL, "\n"); // Passa para a próxima linha
         num_linha++;
     }
 
-    free(codigo);
-    JS_FreeContext(ctx);
-    JS_FreeRuntime(rt);
+    free(codigo); // Libera o conteúdo do arquivo
+    JS_FreeContext(ctx); // Libera o contexto
+    JS_FreeRuntime(rt); // Libera o runtime
+
     return 0;
 }
+
