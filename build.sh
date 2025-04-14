@@ -1,0 +1,1 @@
+gcc main.c -Iquickjs -Lquickjs -lquickjs -lm -ldl -o verde
