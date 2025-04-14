@@ -62,42 +62,38 @@ char *ler_arquivo(const char *caminho) {
     return codigo;
 }
 
-// === Loader de módulos ES6 ===
-static JSModuleDef *js_module_loader(JSContext *ctx,
-                                     const char *module_name, void *opaque) {
-    FILE *f = fopen(module_name, "rb");
-    if (!f) {
-        fprintf(stderr, "Erro ao carregar módulo: %s\n", module_name);
-        return NULL;
+// === Suporte a CommonJS (verdemod) ===
+static JSValue js_verdemod(JSContext *ctx, JSValueConst this_val,
+                           int argc, JSValueConst *argv) {
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "verdemod espera um caminho");
+
+    const char *mod_path = JS_ToCString(ctx, argv[0]);
+    if (!mod_path)
+        return JS_ThrowTypeError(ctx, "Argumento inválido");
+
+    char *source = ler_arquivo(mod_path);
+    if (!source) {
+        JS_FreeCString(ctx, mod_path);
+        return JS_ThrowReferenceError(ctx, "Não foi possível abrir %s", mod_path);
     }
 
-    fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    rewind(f);
+    JSValue exports = JS_NewObject(ctx);
+    JSValue global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "exports", JS_DupValue(ctx, exports));
+    JS_FreeValue(ctx, global);
 
-    char *buf = malloc(len + 1);
-    fread(buf, 1, len, f);
-    buf[len] = '\0';
-    fclose(f);
+    JSValue result = JS_Eval(ctx, source, strlen(source), mod_path, JS_EVAL_TYPE_GLOBAL);
+    free(source);
+    JS_FreeCString(ctx, mod_path);
 
-    JSValue val = JS_Eval(ctx, buf, len, module_name,
-                          JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
-    free(buf);
-
-    if (JS_IsException(val)) {
-        JSValue exc = JS_GetException(ctx);
-        const char *err = JS_ToCString(ctx, exc);
-        fprintf(stderr, "Erro ao compilar módulo: %s\n", err);
-        JS_FreeCString(ctx, err);
-        JS_FreeValue(ctx, exc);
-        return NULL;
+    if (JS_IsException(result)) {
+        JS_FreeValue(ctx, exports);
+        return result;
     }
 
-    JSModuleDef *m = (JSModuleDef *)JS_VALUE_GET_PTR(val);
-    //JS_SetModuleImportMeta(ctx, val, true, false);
-    JS_EvalFunction(ctx, val);  // Executa o módulo
-
-    return m;
+    JS_FreeValue(ctx, result);
+    return exports;
 }
 
 // === Função principal ===
@@ -115,9 +111,15 @@ int main(int argc, char **argv) {
 
     JSRuntime *rt = JS_NewRuntime();
     JSContext *ctx = JS_NewContext(rt);
-    JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
     adicionar_console(ctx);
 
+    // Registra a função `verdemod`
+    JSValue global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "verdemod",
+        JS_NewCFunction(ctx, js_verdemod, "verdemod", 1));
+    JS_FreeValue(ctx, global);
+
+    // Avalia o arquivo principal
     JSValue mod = JS_Eval(ctx, codigo, strlen(codigo), argv[1],
                           JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
 
@@ -128,7 +130,6 @@ int main(int argc, char **argv) {
         JS_FreeCString(ctx, err);
         JS_FreeValue(ctx, exc);
     } else {
-        //JS_SetModuleImportMeta(ctx, mod, true, false);
         JSValue result = JS_EvalFunction(ctx, mod);
         if (JS_IsException(result)) {
             JSValue exc = JS_GetException(ctx);
