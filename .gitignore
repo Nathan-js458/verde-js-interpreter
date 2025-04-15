@@ -1,0 +1,31 @@
+# Arquivos de build e objetos
+*.o
+*.out
+*.log
+*.tmp
+*~
+
+# Executáveis
+verde-js-interpreter
+main
+
+# Diretório de build, se usado
+build/
+
+# Arquivos específicos do sistema
+.DS_Store
+Thumbs.db
+
+# Node.js (caso use npm/yarn para empacotar sucrase)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Sucrase ou outros bundles JS
+*.bundle.js
+
+# Arquivos de cache do editor
+*.swp
+*.swo
+.vscode/
+.idea/
