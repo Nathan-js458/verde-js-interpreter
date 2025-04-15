@@ -1,135 +1,114 @@
+// main.c
 #include <quickjs.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
-#define TRUE 1
-#define FALSE 0
-
-// console.log
+// JS console.log
 static JSValue js_console_log(JSContext *ctx, JSValueConst this_val,
-                              int argc, JSValueConst *argv) {
+                               int argc, JSValueConst *argv) {
     for (int i = 0; i < argc; i++) {
         const char *str = JS_ToCString(ctx, argv[i]);
-        if (str) {
-            printf("%s", str);
-            JS_FreeCString(ctx, str);
-        }
-        if (i != argc - 1)
-            printf(" ");
+        if (!str)
+            return JS_EXCEPTION;
+        printf("%s%s", str, i == argc - 1 ? "\n" : " ");
+        JS_FreeCString(ctx, str);
     }
-    printf("\n");
     return JS_UNDEFINED;
 }
 
-void adicionar_console(JSContext *ctx) {
-    JSValue global = JS_GetGlobalObject(ctx);
+static const JSCFunctionListEntry console_funcs[] = {
+    JS_CFUNC_DEF("log", 1, js_console_log),
+};
+
+static void adicionar_console(JSContext *ctx) {
+    JSValue global_obj = JS_GetGlobalObject(ctx);
     JSValue console = JS_NewObject(ctx);
-
-    JS_SetPropertyStr(ctx, console, "log",
-        JS_NewCFunction(ctx, js_console_log, "log", 1));
-
-    JS_SetPropertyStr(ctx, global, "console", console);
-    JS_FreeValue(ctx, global);
+    JS_SetPropertyFunctionList(ctx, console, console_funcs,
+                               sizeof(console_funcs) / sizeof(JSCFunctionListEntry));
+    JS_SetPropertyStr(ctx, global_obj, "console", console);
+    JS_FreeValue(ctx, global_obj);
 }
 
-// verdemod("arquivo.js") - CommonJS
+// verdemod("foo") CommonJS loader
 static JSValue js_verdemod(JSContext *ctx, JSValueConst this_val,
                            int argc, JSValueConst *argv) {
     if (argc < 1)
-        return JS_ThrowTypeError(ctx, "verdemod requer o caminho do módulo");
-
-    const char *path = JS_ToCString(ctx, argv[0]);
-    if (!path)
+        return JS_EXCEPTION;
+    const char *modname = JS_ToCString(ctx, argv[0]);
+    if (!modname)
         return JS_EXCEPTION;
 
-    FILE *f = fopen(path, "rb");
+    char filename[256];
+    snprintf(filename, sizeof(filename), "%s.js", modname);
+
+    FILE *f = fopen(filename, "rb");
     if (!f) {
-        JS_FreeCString(ctx, path);
-        return JS_ThrowReferenceError(ctx, "Arquivo não encontrado: %s", path);
+        JS_FreeCString(ctx, modname);
+        return JS_ThrowReferenceError(ctx, "Módulo '%s' não encontrado", modname);
     }
-
     fseek(f, 0, SEEK_END);
-    long len = ftell(f);
+    size_t size = ftell(f);
     fseek(f, 0, SEEK_SET);
-
-    char *buf = malloc(len + 1);
-    fread(buf, 1, len, f);
-    buf[len] = '\0';
+    char *buf = malloc(size + 1);
+    fread(buf, 1, size, f);
+    buf[size] = '\0';
     fclose(f);
 
-    char wrapped[10240];
-    snprintf(wrapped, sizeof(wrapped),
-        "(function(exports, module) { %s\n})", buf);
+    JSValue ret = JS_Eval(ctx, buf, size, filename, JS_EVAL_TYPE_GLOBAL);
     free(buf);
-
-    JSValue func_val = JS_Eval(ctx, wrapped, strlen(wrapped), path, JS_EVAL_TYPE_GLOBAL);
-    JS_FreeCString(ctx, path);
-
-    if (JS_IsException(func_val))
-        return func_val;
-
-    JSValue exports = JS_NewObject(ctx);
-    JSValue module = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, module, "exports", JS_DupValue(ctx, exports));
-
-    JSValue args[] = { exports, module };
-    JS_Call(ctx, func_val, JS_UNDEFINED, 2, args);
-
-    JS_FreeValue(ctx, func_val);
-    JS_FreeValue(ctx, exports);
-
-    return JS_GetPropertyStr(ctx, module, "exports");
+    JS_FreeCString(ctx, modname);
+    return ret;
 }
 
-char *ler_arquivo(const char *caminho) {
-    FILE *f = fopen(caminho, "rb");
-    if (!f) return NULL;
+// JSX transpile helper (sucraseTransform deve estar definido no bundle sucrase.bundle.js)
+static JSValue transpile_jsx(JSContext *ctx, const char *code, const char *filename) {
+    const char *js_transpile =
+        "(function(code) { return sucraseTransform(code); })";
 
+    JSValue transpiler_fn = JS_Eval(ctx, js_transpile, strlen(js_transpile), "[jsx-wrapper]", 0);
+    if (JS_IsException(transpiler_fn)) return transpiler_fn;
+
+    JSValue code_val = JS_NewString(ctx, code);
+    JSValue result = JS_Call(ctx, transpiler_fn, JS_UNDEFINED, 1, &code_val);
+
+    JS_FreeValue(ctx, transpiler_fn);
+    JS_FreeValue(ctx, code_val);
+    return result;
+}
+
+// Load arquivo.js ou arquivo.jsx
+static JSValue carregar_arquivo(JSContext *ctx, const char *filename) {
+    FILE *f = fopen(filename, "rb");
+    if (!f) {
+        perror("Erro abrindo arquivo");
+        return JS_EXCEPTION;
+    }
     fseek(f, 0, SEEK_END);
-    long len = ftell(f);
+    size_t len = ftell(f);
     fseek(f, 0, SEEK_SET);
-
     char *buf = malloc(len + 1);
     fread(buf, 1, len, f);
     buf[len] = '\0';
     fclose(f);
 
-    return buf;
-}
-
-// REPL com fgets
-void iniciar_repl(JSContext *ctx) {
-    char linha[4096];
-    printf("VerdeJS REPL\nDigite 'exit' para sair\n");
-
-    while (1) {
-        printf("verde> ");
-        if (!fgets(linha, sizeof(linha), stdin)) break;
-
-        if (strncmp(linha, "exit", 4) == 0)
-            break;
-
-        JSValue resultado = JS_Eval(ctx, linha, strlen(linha), "<input>", JS_EVAL_TYPE_GLOBAL);
-
-        if (JS_IsException(resultado)) {
-            JSValue exc = JS_GetException(ctx);
-            const char *err = JS_ToCString(ctx, exc);
-            fprintf(stderr, "Erro: %s\n", err);
-            JS_FreeCString(ctx, err);
-            JS_FreeValue(ctx, exc);
-        } else if (!JS_IsUndefined(resultado)) {
-            const char *res_str = JS_ToCString(ctx, resultado);
-            if (res_str) {
-                printf("%s\n", res_str);
-                JS_FreeCString(ctx, res_str);
-            }
+    JSValue result;
+    if (strstr(filename, ".jsx")) {
+        JSValue transpiled = transpile_jsx(ctx, buf, filename);
+        if (JS_IsException(transpiled)) {
+            free(buf);
+            return transpiled;
         }
-
-        JS_FreeValue(ctx, resultado);
+        const char *js_code = JS_ToCString(ctx, transpiled);
+        result = JS_Eval(ctx, js_code, strlen(js_code), filename, JS_EVAL_TYPE_GLOBAL);
+        JS_FreeCString(ctx, js_code);
+        JS_FreeValue(ctx, transpiled);
+    } else {
+        result = JS_Eval(ctx, buf, len, filename, JS_EVAL_TYPE_GLOBAL);
     }
-
-    printf("Encerrando REPL.\n");
+    free(buf);
+    return result;
 }
 
 int main(int argc, char **argv) {
@@ -138,41 +117,41 @@ int main(int argc, char **argv) {
 
     adicionar_console(ctx);
 
+    // Adiciona verdemod
     JSValue global = JS_GetGlobalObject(ctx);
-    JS_SetPropertyStr(ctx, global, "verdemod",
-        JS_NewCFunction(ctx, js_verdemod, "verdemod", 1));
+    JSValue verdemod_fn = JS_NewCFunction(ctx, js_verdemod, "verdemod", 1);
+    JS_SetPropertyStr(ctx, global, "verdemod", verdemod_fn);
     JS_FreeValue(ctx, global);
 
-    if (argc >= 2) {
-        char *codigo = ler_arquivo(argv[1]);
-        if (!codigo) {
-            fprintf(stderr, "Erro ao abrir o arquivo: %s\n", argv[1]);
-            return 1;
-        }
+    // Carrega o sucrase.bundle.js
+    carregar_arquivo(ctx, "sucrase.bundle.js");
 
-        JSValue mod = JS_Eval(ctx, codigo, strlen(codigo), argv[1],
-                              JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
-        free(codigo);
-
-        if (JS_IsException(mod)) {
+    if (argc > 1) {
+        JSValue val = carregar_arquivo(ctx, argv[1]);
+        if (JS_IsException(val)) {
             JSValue exc = JS_GetException(ctx);
             const char *err = JS_ToCString(ctx, exc);
-            fprintf(stderr, "Erro ao compilar: %s\n", err);
+            fprintf(stderr, "Erro: %s\n", err);
             JS_FreeCString(ctx, err);
             JS_FreeValue(ctx, exc);
-        } else {
-            JSValue res = JS_EvalFunction(ctx, mod);
-            if (JS_IsException(res)) {
+        }
+        JS_FreeValue(ctx, val);
+    } else {
+        // REPL
+        char buffer[1024];
+        while (1) {
+            printf("> ");
+            if (!fgets(buffer, sizeof(buffer), stdin)) break;
+            JSValue val = JS_Eval(ctx, buffer, strlen(buffer), "<stdin>", 0);
+            if (JS_IsException(val)) {
                 JSValue exc = JS_GetException(ctx);
                 const char *err = JS_ToCString(ctx, exc);
-                fprintf(stderr, "Erro ao executar: %s\n", err);
+                fprintf(stderr, "Erro: %s\n", err);
                 JS_FreeCString(ctx, err);
                 JS_FreeValue(ctx, exc);
             }
-            JS_FreeValue(ctx, res);
+            JS_FreeValue(ctx, val);
         }
-    } else {
-        iniciar_repl(ctx);
     }
 
     JS_FreeContext(ctx);

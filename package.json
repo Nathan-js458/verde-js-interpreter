@@ -1,0 +1,16 @@
+{
+  "name": "green_proj",
+  "version": "1.0.0",
+  "main": "sucrase-wrapper.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "esbuild": "^0.25.2",
+    "sucrase": "^3.35.0"
+  }
+}
