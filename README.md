@@ -6,3 +6,7 @@ verde is a javascript interpreter. it means "green" in portuguese, it is my favo
 Usage: `verde file.js` where `file.js` is the javascrpt input file.
 
 The `require` function does not exist, but you can use `verdemod` instead.
+
+To run jsx files, you need this line of code:
+
+`verdemod('./verde-jsx-reader.js')`
